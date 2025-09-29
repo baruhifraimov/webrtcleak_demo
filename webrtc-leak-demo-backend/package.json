@@ -1,0 +1,13 @@
+{
+  "name": "webrtc-leak-demo-backend",
+  "version": "1.0.0",
+  "description": "A simple backend to log WebRTC leak data.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  }
+}
