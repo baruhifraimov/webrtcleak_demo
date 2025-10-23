@@ -1,3 +1,4 @@
+// 23102025.0017
 // This regex is designed to match all standard IPv4 formats.
 const regexIPv4 = /\b((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/;
 // This is a more comprehensive regex for IPv6 that handles various formats including compressed ones.
@@ -34,23 +35,26 @@ const logToServer = async (content) => {
  */
 const getGeoData = async (ip) => {
   try {
-    // Use a more privacy-friendly API that doesn't require a key for basic info
-    const response = await fetch(`https://freeipapi.com/api/json/${ip}`);
+    // Using ipapi.co which is more reliable and has better CORS support
+    const response = await fetch(`https://ipapi.co/${ip}/json/`);
     if (!response.ok) {
       const errorText = await response.text();
       return { error: `Failed to fetch GeoIP for ${ip}. Status: ${response.status}. Details: ${errorText}` };
     }
     const data = await response.json();
     return {
-      country: data.countryName || 'Unknown',
-      city: data.cityName || 'Unknown',
-      postal_code: data.zipCode || 'Unknown',
-      time_zone: data.timeZone || 'Unknown',
+      country: data.country_name || 'Unknown',
+      city: data.city || 'Unknown',
+      postal_code: data.postal || 'Unknown',
+      time_zone: data.timezone || 'Unknown',
       latitude: data.latitude || 'Unknown',
       longitude: data.longitude || 'Unknown',
-      isVPN: data.isProxy || false, // The API can sometimes detect VPNs/proxies
+      isVPN: data.hosting || false, // If it's a hosting provider, likely a VPN/proxy
+      org: data.org || 'Unknown', // Added organization info which can help identify VPN providers
+      asn: data.asn || 'Unknown' // Added ASN which can help identify the network provider
     };
   } catch (error) {
+    console.error('GeoIP Error:', error);
     return { error: `Error fetching GeoIP: ${error.message}` };
   }
 };
@@ -81,17 +85,37 @@ const isPrivateIP = (ip) => {
  * The main function to perform the WebRTC leak test and log the results.
  * @param {number} timeout - The time in milliseconds to wait for ICE candidates.
  */
-const runLeakTest = async (timeout = 2000) => {
+const runLeakTest = async (timeout = 5000) => {
   console.log('Starting WebRTC leak test with improved logic...');
   const uniqueLeakedIPs = new Set();
+  const iceCandidateTypes = { host: 0, srflx: 0, relay: 0 };
+  const localHostnames = new Set();
 
   const onicecandidate = (ice) => {
     const candidate = ice?.candidate?.candidate;
     if (candidate) {
+      console.log('ICE candidate received:', candidate);
+      // Extract candidate type
+      const typeMatch = candidate.match(/typ ([a-z]+)/);
+      if (typeMatch && typeMatch[1]) {
+        iceCandidateTypes[typeMatch[1]] = (iceCandidateTypes[typeMatch[1]] || 0) + 1;
+      }
+      
+      // Check for mDNS hostnames
+      if (candidate.includes('.local ')) {
+        const hostnameMatch = candidate.match(/([a-f0-9-]+\.local)/);
+        if (hostnameMatch) {
+          localHostnames.add(hostnameMatch[1]);
+        }
+      }
+
       // Extract all IPs from the candidate string
       const ips = candidate.match(new RegExp(`${regexIPv4.source}|${regexIPv6.source}`, 'g'));
       if (ips) {
-        ips.forEach(ip => uniqueLeakedIPs.add(ip));
+        ips.forEach(ip => {
+          console.log('Detected IP:', ip);
+          uniqueLeakedIPs.add(ip);
+        });
       }
     }
   };
@@ -106,9 +130,15 @@ const runLeakTest = async (timeout = 2000) => {
 
   // Using local STUN server with authentication
   const iceServers = [{
-    urls: 'stun:77.125.136.154:3478'}];
+    urls: ['stun:192.168.2.135:3478','stun:77.125.137.213:3478', 'stun:[2001:db8::1]:3478', 'stun:stun.l.google.com:19302']
+  }];
 
-  const connection = new RTCPeerConnection({ iceServers });
+  const connection = new RTCPeerConnection({ 
+    iceServers,
+    iceTransportPolicy: 'all',
+    rtcpMuxPolicy: 'require',
+    iceCandidatePoolSize: 1
+  });
 
   connection.addEventListener('icecandidate', onicecandidate);
   connection.createDataChannel('');
@@ -139,7 +169,7 @@ const runLeakTest = async (timeout = 2000) => {
       console.error('Could not fetch primary public IP.', e);
     }
 
-    // 2. Get Browser Fingerprint
+    // 2. Get Advanced Browser Fingerprint
     const fingerprint = {};
     const nav = window.navigator;
     const properties = [
@@ -156,6 +186,87 @@ const runLeakTest = async (timeout = 2000) => {
         } catch (e) { /* ignore inaccessible properties */ }
     });
 
+    // Get precise timezone info
+    try {
+        fingerprint.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        fingerprint.utcOffset = -new Date().getTimezoneOffset() / 60;
+    } catch (e) {
+        console.error('Error getting timezone:', e);
+    }
+
+    // Canvas fingerprint
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 300;
+        canvas.height = 150;
+        const ctx = canvas.getContext('2d');
+        ctx.textBaseline = 'top';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#f60';
+        ctx.fillRect(125, 1, 62, 20);
+        ctx.fillStyle = '#069';
+        ctx.fillText('Fingerprint!', 2, 15);
+        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+        ctx.fillText('Canvas Test', 4, 45);
+        fingerprint.canvasHash = canvas.toDataURL();
+    } catch (e) {
+        console.error('Error getting canvas fingerprint:', e);
+    }
+
+    // WebGL fingerprint
+    try {
+        const gl = document.createElement('canvas').getContext('webgl');
+        if (gl) {
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            if (debugInfo) {
+                fingerprint.gpuVendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+                fingerprint.gpuRenderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+            }
+        }
+    } catch (e) {
+        console.error('Error getting WebGL info:', e);
+    }
+
+    // Audio fingerprint
+    try {
+        const audioCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 44100, 44100);
+        const oscillator = audioCtx.createOscillator();
+        oscillator.type = 'triangle';
+        oscillator.frequency.setValueAtTime(10000, audioCtx.currentTime);
+        const compressor = audioCtx.createDynamicsCompressor();
+        oscillator.connect(compressor);
+        compressor.connect(audioCtx.destination);
+        oscillator.start(0);
+        audioCtx.startRendering().then(buffer => {
+            const data = buffer.getChannelData(0).slice(4500, 5000);
+            fingerprint.audioHash = data.reduce((acc, val) => acc + Math.abs(val), 0).toString();
+        });
+    } catch (e) {
+        console.error('Error getting audio fingerprint:', e);
+    }
+
+    // Media Devices
+    if (navigator.mediaDevices?.enumerateDevices) {
+        navigator.mediaDevices.enumerateDevices()
+            .then(devices => {
+                fingerprint.mediaDevices = {
+                    audioInputs: devices.filter(d => d.kind === 'audioinput').length,
+                    audioOutputs: devices.filter(d => d.kind === 'audiooutput').length,
+                    videoInputs: devices.filter(d => d.kind === 'videoinput').length
+                };
+            })
+            .catch(e => console.error('Error enumerating devices:', e));
+    }
+
+    // Network Information
+    if (navigator.connection) {
+        fingerprint.networkInfo = {
+            type: navigator.connection.effectiveType,
+            downlink: navigator.connection.downlink,
+            rtt: navigator.connection.rtt
+        };
+    }
+
 
     // 3. Consolidate and get GeoData for all unique IPs
     const allUniqueIps = new Set([primaryPublicIp, ...uniqueLeakedIPs].filter(ip => ip && ip !== 'Unknown'));
@@ -163,10 +274,27 @@ const runLeakTest = async (timeout = 2000) => {
     const geoResults = await Promise.all(geoDataPromises);
 
     // --- Format Log Content ---
-    let logContent = `--- New Client Entry: ${new Date().toISOString()} ---\n`;
+    const now = new Date();
+    const localDateTime = now.toLocaleString('en-US', { 
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3,
+        hour12: false
+    });
+    let logContent = `--- New Client Entry: ${localDateTime} (Local Time) ---\n`;
     logContent += `User Agent: ${navigator.userAgent}\n\n`;
     
-    logContent += '--- IP Information ---\n';
+    logContent += '--- WebRTC Information ---\n';
+    logContent += `ICE Candidate Types: ${JSON.stringify(iceCandidateTypes)}\n`;
+    if (localHostnames.size > 0) {
+        logContent += `mDNS Hostnames: ${Array.from(localHostnames).join(', ')}\n`;
+    }
+    
+    logContent += '\n--- IP Information ---\n';
     geoResults.forEach(geo => {
         let ipType = 'Leaked';
         if (geo.ip === primaryPublicIp) {
