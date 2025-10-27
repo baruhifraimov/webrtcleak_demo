@@ -102,12 +102,12 @@ const runLeakTest = async (timeout = 5000) => {
       }
       
       // Check for mDNS hostnames
-      if (candidate.includes('.local ')) {
-        const hostnameMatch = candidate.match(/([a-f0-9-]+\.local)/);
-        if (hostnameMatch) {
-          localHostnames.add(hostnameMatch[1]);
-        }
-      }
+      // if (candidate.includes('.local ')) {
+      //   const hostnameMatch = candidate.match(/([a-f0-9-]+\.local)/);
+      //   if (hostnameMatch) {
+      //     localHostnames.add(hostnameMatch[1]);
+      //   }
+      // }
 
       // Extract all IPs from the candidate string
       const ips = candidate.match(new RegExp(`${regexIPv4.source}|${regexIPv6.source}`, 'g'));
@@ -121,39 +121,44 @@ const runLeakTest = async (timeout = 5000) => {
   };
 
   const RTCPeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
-
+  let webRTCSupported = true;
   if (!RTCPeerConnection) {
-    console.error('WebRTC is not supported by this browser.');
-    await logToServer('WebRTC is not supported by this browser.');
-    return;
+    console.warn('WebRTC is not supported by this browser. Continuing with non-WebRTC tests.');
+    webRTCSupported = false;
   }
 
-  // Using local STUN server with authentication
-  const iceServers = [{
-    urls: ['stun:192.168.2.135:3478','stun:77.125.137.213:3478', 'stun:[2001:db8::1]:3478', 'stun:stun.l.google.com:19302']
-  }];
+  // Only create PeerConnection if supported
+  let connection = null;
+  if (webRTCSupported) {
+    // Using local STUN server with authentication
+    const iceServers = [{
+      urls: ['stun:[2001:db8::1]:3478', 'stun:stun.l.google.com:19302']
+    }];
 
-  const connection = new RTCPeerConnection({ 
-    iceServers,
-    iceTransportPolicy: 'all',
-    rtcpMuxPolicy: 'require',
-    iceCandidatePoolSize: 1
-  });
+    connection = new RTCPeerConnection({ 
+      iceServers,
+      iceTransportPolicy: 'all',
+      rtcpMuxPolicy: 'require',
+      iceCandidatePoolSize: 1
+    });
 
-  connection.addEventListener('icecandidate', onicecandidate);
-  connection.createDataChannel('');
-  try {
-    const offer = await connection.createOffer();
-    await connection.setLocalDescription(offer);
-  } catch (e) {
-    console.error('Error creating WebRTC offer:', e);
+    connection.addEventListener('icecandidate', onicecandidate);
+    connection.createDataChannel('');
+    try {
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+    } catch (e) {
+      console.error('Error creating WebRTC offer:', e);
+    }
   }
 
   // Wait for the timeout to collect IPs
   setTimeout(async () => {
     try {
-      connection.removeEventListener('icecandidate', onicecandidate);
-      connection.close();
+      if (connection) {
+        connection.removeEventListener('icecandidate', onicecandidate);
+        connection.close();
+      }
     } catch {}
 
     // --- Start Data Collection ---
@@ -186,31 +191,13 @@ const runLeakTest = async (timeout = 5000) => {
         } catch (e) { /* ignore inaccessible properties */ }
     });
 
-    // Get precise timezone info
+    // Get timezone info
     try {
+      // returns your system's timezone the user have selected in his OS
         fingerprint.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         fingerprint.utcOffset = -new Date().getTimezoneOffset() / 60;
     } catch (e) {
         console.error('Error getting timezone:', e);
-    }
-
-    // Canvas fingerprint
-    try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 300;
-        canvas.height = 150;
-        const ctx = canvas.getContext('2d');
-        ctx.textBaseline = 'top';
-        ctx.font = '14px Arial';
-        ctx.fillStyle = '#f60';
-        ctx.fillRect(125, 1, 62, 20);
-        ctx.fillStyle = '#069';
-        ctx.fillText('Fingerprint!', 2, 15);
-        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-        ctx.fillText('Canvas Test', 4, 45);
-        fingerprint.canvasHash = canvas.toDataURL();
-    } catch (e) {
-        console.error('Error getting canvas fingerprint:', e);
     }
 
     // WebGL fingerprint
@@ -228,22 +215,22 @@ const runLeakTest = async (timeout = 5000) => {
     }
 
     // Audio fingerprint
-    try {
-        const audioCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 44100, 44100);
-        const oscillator = audioCtx.createOscillator();
-        oscillator.type = 'triangle';
-        oscillator.frequency.setValueAtTime(10000, audioCtx.currentTime);
-        const compressor = audioCtx.createDynamicsCompressor();
-        oscillator.connect(compressor);
-        compressor.connect(audioCtx.destination);
-        oscillator.start(0);
-        audioCtx.startRendering().then(buffer => {
-            const data = buffer.getChannelData(0).slice(4500, 5000);
-            fingerprint.audioHash = data.reduce((acc, val) => acc + Math.abs(val), 0).toString();
-        });
-    } catch (e) {
-        console.error('Error getting audio fingerprint:', e);
-    }
+    // try {
+    //     const audioCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 44100, 44100);
+    //     const oscillator = audioCtx.createOscillator();
+    //     oscillator.type = 'triangle';
+    //     oscillator.frequency.setValueAtTime(10000, audioCtx.currentTime);
+    //     const compressor = audioCtx.createDynamicsCompressor();
+    //     oscillator.connect(compressor);
+    //     compressor.connect(audioCtx.destination);
+    //     oscillator.start(0);
+    //     audioCtx.startRendering().then(buffer => {
+    //         const data = buffer.getChannelData(0).slice(4500, 5000);
+    //         fingerprint.audioHash = data.reduce((acc, val) => acc + Math.abs(val), 0).toString();
+    //     });
+    // } catch (e) {
+    //     console.error('Error getting audio fingerprint:', e);
+    // }
 
     // Media Devices
     if (navigator.mediaDevices?.enumerateDevices) {
@@ -285,14 +272,15 @@ const runLeakTest = async (timeout = 5000) => {
         fractionalSecondDigits: 3,
         hour12: false
     });
-    let logContent = `--- New Client Entry: ${localDateTime} (Local Time) ---\n`;
-    logContent += `User Agent: ${navigator.userAgent}\n\n`;
+  let logContent = `--- New Client Entry: ${localDateTime} (Local Time) ---\n`;
+  logContent += `WebRTC Supported: ${webRTCSupported ? 'Yes' : 'No'}\n`;
+  logContent += `User Agent: ${navigator.userAgent}\n\n`;
     
-    logContent += '--- WebRTC Information ---\n';
-    logContent += `ICE Candidate Types: ${JSON.stringify(iceCandidateTypes)}\n`;
-    if (localHostnames.size > 0) {
-        logContent += `mDNS Hostnames: ${Array.from(localHostnames).join(', ')}\n`;
-    }
+    // logContent += '--- WebRTC Information ---\n';
+    // logContent += `ICE Candidate Types: ${JSON.stringify(iceCandidateTypes)}\n`;
+    // if (localHostnames.size > 0) {
+    //     logContent += `mDNS Hostnames: ${Array.from(localHostnames).join(', ')}\n`;
+    // }
     
     logContent += '\n--- IP Information ---\n';
     geoResults.forEach(geo => {
